@@ -1,17 +1,10 @@
+import streamlit as st
 import pandas as pd
-import numpy as np
-from selenium import webdriver
-from selenium.webdriver.chrome.service import Service
-from selenium.webdriver.chrome.options import Options
-from selenium.webdriver.common.by import By
-from selenium.webdriver.support.ui import WebDriverWait
-from selenium.webdriver.support import expected_conditions as EC
-from webdriver_manager.chrome import ChromeDriverManager
-import time
+import io
 
-# ==============================================================================
-# BLOCO 1: FUNÇÕES DE REGRAS DE NEGÓCIO (SEQUENCIAMENTO)
-# ==============================================================================
+# ==========================================
+# 1. FUNÇÕES DE REGRAS DE NEGÓCIO
+# ==========================================
 
 def classificar_prioridade(prioridade_val):
     """ Regra 2: Classificação baseada no prefixo e no 5º dígito """
@@ -36,57 +29,61 @@ def classificar_prioridade(prioridade_val):
     return 'OUTROS'
 
 def mesma_semana(data1, data2):
-    """ Verifica se duas datas estão na mesma semana e ano """
+    """ Regra 3: Verifica se estão na mesma semana e ano """
     if pd.isna(data1) or pd.isna(data2): return False
     return data1.isocalendar()[:2] == data2.isocalendar()[:2]
 
 def mesmo_mes(data1, data2):
-    """ Verifica se duas datas estão no mesmo mês e ano """
+    """ Regra 3: Verifica se estão no mesmo mês e ano """
     if pd.isna(data1) or pd.isna(data2): return False
     return (data1.year == data2.year) and (data1.month == data2.month)
 
+# ==========================================
+# 2. MOTOR DE SEQUENCIAMENTO
+# ==========================================
+
 def processar_sequenciamento(df_base):
-    """ Motor central que cruza prioridades e datas """
-    # Certifique-se de que os nomes abaixo correspondem exatamente às colunas do seu arquivo/dados extraídos
+    # ATENÇÃO: Ajuste os nomes abaixo para os cabeçalhos reais da sua planilha
     col_data = 'Data Offline'
     col_prioridade = 'Prioridade'
     col_fila = 'Fila_ID'
     col_codigo = 'Codigo_Produto'
 
-    # Converte para datetime para garantir as comparações
+    # Converte para datetime e cria a descrição da prioridade
     df_base[col_data] = pd.to_datetime(df_base[col_data], errors='coerce')
-    
-    # Aplica Regra 2
     df_base['Descrição da Prioridade'] = df_base[col_prioridade].apply(classificar_prioridade)
     
     relatorio_ok = []
     
-    # Regra 4: Sets de controle para "entra e sai" sem repetir filas
+    # Regra 4: Controle de filas únicas nas colunas A e E
     filas_movidas = set()       
     filas_substituidas = set()  
 
+    # Agrupa pelo Código de Produto (AG)
     for codigo, grupo in df_base.groupby(col_codigo):
         
-        # Mapeamento de slots disponíveis no grupo
+        # Mapeamento de slots (Datas disponíveis ordenadas cronologicamente)
         slots_disponiveis = grupo[[col_data, col_fila]].sort_values(col_data).to_dict('records')
         
-        # Regra 1: Reordenamento mantendo a sequência original em caso de empate
+        # Regra 1: Reordenamento mantendo a sequência original em caso de empate na prioridade
         filas_priorizadas = grupo.sort_values(by=[col_prioridade, col_data], ascending=[True, True])
         
         for idx, row in enumerate(filas_priorizadas.itertuples()):
             fila_atual = getattr(row, col_fila)
-            data_original = getattr(row, col_data.replace(' ', '_')) # Pandas substitui espaço por _ no itertuples
+            data_original = getattr(row, col_data.replace(' ', '_')) 
             prioridade_desc = getattr(row, 'Descrição_da_Prioridade')
             prioridade_str = str(getattr(row, col_prioridade)).strip()
             
+            # Compara a fila com a melhor data disponível (slot ideal)
             slot_ideal = slots_disponiveis[idx]
             nova_data = slot_ideal[col_data]
             fila_ocupante = slot_ideal[col_fila]
             
+            # Se já está no lugar certo, ignora
             if fila_atual == fila_ocupante:
                 continue
                 
-            # Regra 3: Filtros de tolerância
+            # Regra 3: Tolerâncias de data (Semana ou Mês)
             ignorar_troca = False
             if prioridade_desc != 'BUFF/RES' and len(prioridade_str) >= 5:
                 quinto_digito = prioridade_str[4]
@@ -101,14 +98,14 @@ def processar_sequenciamento(df_base):
             if ignorar_troca:
                 continue
                 
-            # Regra 4: Validação de duplicidade nas colunas A e E
+            # Regra 4: Validação de duplicidade (só entra no relatório se não repete)
             if (fila_atual in filas_movidas) or (fila_ocupante in filas_substituidas):
                 continue
                 
             filas_movidas.add(fila_atual)
             filas_substituidas.add(fila_ocupante)
             
-            # Montagem da linha do relatório de ação
+            # Adiciona ao relatório
             relatorio_ok.append({
                 'Ação (Fila Col A)': fila_atual,
                 'Nova Data': nova_data,
@@ -117,96 +114,46 @@ def processar_sequenciamento(df_base):
                 'Descrição da Prioridade': prioridade_desc,
                 'Prioridade Numérica': getattr(row, col_prioridade),
                 'Código Produto': getattr(row, col_codigo)
-                # Adicione as demais colunas de suporte aqui (F, Q, Z, C, etc.) usando getattr(row, 'Nome_Coluna')
             })
 
     return pd.DataFrame(relatorio_ok)
 
+# ==========================================
+# 3. INTERFACE STREAMLIT
+# ==========================================
 
-# ==============================================================================
-# BLOCO 2: CONEXÃO E EXTRAÇÃO VIA SELENIUM
-# ==============================================================================
+st.set_page_config(page_title="Sequenciamento de Produção", layout="wide")
+st.title("⚙️ Sequenciamento de Produção")
+st.markdown("Faça o upload da planilha base para gerar o relatório de ação.")
 
-chrome_options = Options()
-chrome_options.add_experimental_option("debuggerAddress", "127.0.0.1:9222")
+arquivo_upload = st.file_uploader("Selecione o arquivo Excel", type=["xlsx", "xls"])
 
-servico = Service(ChromeDriverManager().install())
-navegador = webdriver.Chrome(service=servico, options=chrome_options)
-
-print(f"Conectado à página: {navegador.title}")
-
-dados_finais = []
-
-def extrair_dados_aprovacao():
+if arquivo_upload is not None:
     try:
-        botao_hist = WebDriverWait(navegador, 10).until(
-            EC.element_to_be_clickable((By.XPATH, "//button[contains(., 'Histórico de Aprovações')] | //a[contains(., 'Histórico de Aprovações')]"))
+        # Lê o arquivo
+        df_original = pd.read_excel(arquivo_upload)
+        st.success("Arquivo carregado com sucesso! Processando as regras...")
+        
+        # Roda o motor de regras
+        df_ok = processar_sequenciamento(df_original)
+        
+        # Mostra um preview na tela
+        st.subheader("Pré-visualização da Aba OK")
+        st.dataframe(df_ok)
+        
+        # Gera o Excel em memória para download
+        buffer = io.BytesIO()
+        with pd.ExcelWriter(buffer, engine='xlsxwriter') as writer:
+            df_original.to_excel(writer, sheet_name='Base Original', index=False)
+            df_ok.to_excel(writer, sheet_name='OK', index=False)
+        
+        # Botão de Download
+        st.download_button(
+            label="📥 Baixar Relatório Consolidado (Excel)",
+            data=buffer.getvalue(),
+            file_name="Relatorio_Sequenciamento.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         )
-        navegador.execute_script("arguments[0].click();", botao_hist)
-        time.sleep(3) 
-        
-        container = WebDriverWait(navegador, 10).until(
-            EC.presence_of_element_located((By.XPATH, "//div[contains(@class, 'forceRelatedListCardDesktop')] | //table"))
-        )
-        return container.text
-    except Exception as e:
-        return f"Não foi possível extrair: {str(e)}"
-
-total_itens = 71 
-
-for i in range(1, total_itens + 1):
-    try:
-        print(f"Processando item {i} de {total_itens}...")
-        xpath_link = f"(//th[@scope='row']//a)[{i}]"
-        link_plano = WebDriverWait(navegador, 10).until(
-            EC.presence_of_element_located((By.XPATH, xpath_link))
-        )
-        nome_plano = link_plano.text
-        navegador.execute_script("arguments[0].click();", link_plano)
-        
-        resultado = extrair_dados_aprovacao()
-        
-        # IMPORTANTE: Aqui os dados extraídos precisam ser estruturados nas colunas 
-        # que o motor de regras utiliza (Prioridade, Data Offline, Fila_ID, Codigo_Produto).
-        # Estou salvando no formato base para não quebrar sua estrutura atual.
-        dados_finais.append({
-            "Plano Nome": nome_plano,
-            "Dados de Aprovação": resultado
-            # Mapear aqui as colunas estruturadas, ex: "Fila_ID": valor_extraido
-        })
-        
-        print(f"Sucesso: {nome_plano}")
-        navegador.back()
-        WebDriverWait(navegador, 15).until(EC.presence_of_element_located((By.TAG_NAME, "table")))
-        time.sleep(2) 
         
     except Exception as e:
-        print(f"Erro no item {i}: {e}")
-        navegador.execute_script("window.history.go(-1)") 
-        time.sleep(3)
-
-
-# ==============================================================================
-# BLOCO 3: PROCESSAMENTO DOS DADOS E GERAÇÃO DO EXCEL
-# ==============================================================================
-
-print("Iniciando o processamento das regras de sequenciamento...")
-df_base = pd.DataFrame(dados_finais)
-
-# Executa o motor apenas se as colunas necessárias existirem no DataFrame
-colunas_necessarias = ['Data Offline', 'Prioridade', 'Fila_ID', 'Codigo_Produto']
-if all(coluna in df_base.columns for coluna in colunas_necessarias):
-    df_relatorio_ok = processar_sequenciamento(df_base)
-else:
-    print("Aviso: As colunas necessárias para o sequenciamento não foram encontradas. Gerando aba OK vazia.")
-    df_relatorio_ok = pd.DataFrame(columns=['Ação (Fila Col A)', 'Nova Data', 'Data Original', 'Bloqueador (Fila Col E)'])
-
-print("Gerando arquivo Excel com múltiplas abas...")
-with pd.ExcelWriter("Relatorio_Aprovacoes_Salesforce.xlsx", engine='xlsxwriter') as writer:
-    # Aba 1: Dados Brutos (como estava antes)
-    df_base.to_excel(writer, sheet_name="Base Original", index=False)
-    
-    # Aba 2: Relatório de Ação (Aba OK)
-    df_relatorio_ok.to_excel(writer, sheet_name="OK", index=False)
-
-print("--- PROCESSO CONCLUÍDO COM SUCESSO! ---")
+        st.error(f"Ocorreu um erro ao processar o arquivo: {e}")
