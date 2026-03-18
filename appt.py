@@ -4,20 +4,32 @@ import io
 import re
 
 # ==========================================
-# 1. FUNÇÕES DE REGRAS DE NEGÓCIO
+# 1. FUNÇÕES DE TRATAMENTO E REGRAS DE NEGÓCIO
 # ==========================================
+
+def limpar_prioridade(prioridade_val):
+    """ Abordagem à prova de falhas para extrair apenas os números reais do campo """
+    try:
+        if pd.isna(prioridade_val): return ""
+        # Converte para string e troca possível vírgula por ponto
+        p_str = str(prioridade_val).strip().replace(',', '.')
+        # Se o Pandas transformou em float (ex: 10512202.0), corta do ponto para frente
+        if '.' in p_str:
+            p_str = p_str.split('.')[0]
+        # Remove qualquer coisa que não seja número puro
+        return re.sub(r'\D', '', p_str)
+    except:
+        return ""
 
 def classificar_prioridade(prioridade_val):
     """ Regra 2: Classificação baseada no prefixo e no 5º dígito """
-    # Remove casas decimais que o Pandas pode adicionar (ex: .0) e limpa tudo que não for número puro
-    p_str = str(prioridade_val).split('.')[0]
-    p_str = re.sub(r'\D', '', p_str)
+    p_str = limpar_prioridade(prioridade_val)
     
     if p_str.startswith('9'):
         return 'BUFF/RES'
     
     if len(p_str) >= 5:
-        ref = p_str[4]  # Pega exatamente o 5º número
+        ref = p_str[4]  # Pega o 5º caractere (índice 4)
         mapa_descricoes = {
             '1': 'URGENTE',
             '2': 'EXPORTAÇÃO',
@@ -40,7 +52,6 @@ def mesmo_mes(data1, data2):
     return (data1.year == data2.year) and (data1.month == data2.month)
 
 def excel_col_to_name(df, col_str):
-    """ Converte letra de coluna do Excel (ex: 'AX') para o nome do cabeçalho no Pandas """
     col_str = col_str.upper()
     idx = 0
     for char in col_str:
@@ -61,7 +72,6 @@ def processar_sequenciamento(df_base, col_data, col_prioridade, col_fila, col_co
     df_processo[col_data] = pd.to_datetime(df_processo[col_data], errors='coerce')
     df_processo['Descrição da Prioridade'] = df_processo[col_prioridade].apply(classificar_prioridade)
     
-    # Identifica os nomes das colunas baseadas nas letras vitais de suporte
     letras_suporte = ['F', 'Q', 'Z', 'C', 'AX', 'CQ', 'I']
     colunas_suporte = []
     for letra in letras_suporte:
@@ -81,10 +91,7 @@ def processar_sequenciamento(df_base, col_data, col_prioridade, col_fila, col_co
             fila_atual = row[col_fila]
             data_original = row[col_data]
             prioridade_desc = row['Descrição da Prioridade']
-            
-            # Limpeza do número real para aplicar regras de tolerância de data
-            prioridade_str = str(row[col_prioridade]).split('.')[0]
-            prioridade_str = re.sub(r'\D', '', prioridade_str)
+            prioridade_str = limpar_prioridade(row[col_prioridade])
             
             slot_ideal = slots_disponiveis[idx]
             nova_data = slot_ideal[col_data]
@@ -96,7 +103,6 @@ def processar_sequenciamento(df_base, col_data, col_prioridade, col_fila, col_co
             ignorar_troca = False
             if prioridade_desc != 'BUFF/RES' and len(prioridade_str) >= 5:
                 quinto_digito = prioridade_str[4]
-                
                 if quinto_digito in ['1', '2', '4', '6']:
                     if mesma_semana(data_original, nova_data):
                         ignorar_troca = True
@@ -113,7 +119,6 @@ def processar_sequenciamento(df_base, col_data, col_prioridade, col_fila, col_co
             filas_movidas.add(fila_atual)
             filas_substituidas.add(fila_ocupante)
             
-            # Montagem do Output EXATAMENTE como pedido na primeira versão
             linha_acao = {
                 'Identificação da fila (Col A)': fila_atual,
                 'Data correta sugerida': nova_data,
@@ -124,13 +129,18 @@ def processar_sequenciamento(df_base, col_data, col_prioridade, col_fila, col_co
                 'Código do Produto': row[col_codigo]
             }
             
-            # Anexa APENAS as colunas de suporte requisitadas
             for letra, nome_col in colunas_suporte:
                 linha_acao[f"Col {letra} - {nome_col}"] = row[nome_col]
                     
             relatorio_ok.append(linha_acao)
 
-    return pd.DataFrame(relatorio_ok)
+    df_final = pd.DataFrame(relatorio_ok)
+    
+    # ORDENAÇÃO: 1) Código do produto, 2) Data correta sugerida
+    if not df_final.empty:
+        df_final = df_final.sort_values(by=['Código do Produto', 'Data correta sugerida'])
+        
+    return df_final
 
 # ==========================================
 # 3. INTERFACE STREAMLIT
@@ -174,6 +184,7 @@ if arquivo_upload is not None:
                 if df_ok.empty:
                     st.warning("Nenhuma alteração necessária encontrada.")
                 else:
+                    # Formata as datas visualmente para a tela e para o Excel
                     if 'Data correta sugerida' in df_ok.columns:
                         df_ok['Data correta sugerida'] = df_ok['Data correta sugerida'].dt.strftime('%d/%m/%Y')
                     if 'Data Original' in df_ok.columns:
@@ -181,10 +192,27 @@ if arquivo_upload is not None:
                         
                     st.dataframe(df_ok)
                 
+                # Geração do arquivo Excel com formatação
                 buffer = io.BytesIO()
                 with pd.ExcelWriter(buffer, engine='xlsxwriter') as writer:
                     df_original.to_excel(writer, sheet_name='Base Original', index=False)
                     df_ok.to_excel(writer, sheet_name='OK', index=False)
+                    
+                    # Aplica as cores no cabeçalho da Aba OK
+                    workbook  = writer.book
+                    worksheet = writer.sheets['OK']
+                    
+                    formato_cabecalho = workbook.add_format({
+                        'bg_color': '#1F4E78', # Azul escuro
+                        'font_color': 'white',
+                        'bold': True,
+                        'border': 1
+                    })
+                    
+                    # Escreve os cabeçalhos pintados
+                    for col_num, value in enumerate(df_ok.columns.values):
+                        worksheet.write(0, col_num, value, formato_cabecalho)
+                        worksheet.set_column(col_num, col_num, 20) # Ajusta largura
                 
                 st.download_button(
                     label="📥 Baixar Relatório Consolidado (Excel)",
@@ -195,4 +223,3 @@ if arquivo_upload is not None:
         
     except Exception as e:
         st.error(f"Ocorreu um erro ao processar o arquivo: {e}")
-
