@@ -212,7 +212,7 @@ if arquivo_upload is not None:
             idx_cod = encontrar_indice_coluna(colunas_disponiveis, ['CD_PRODUTO', 'CODIGO_PRODUTO'])
             col_codigo = st.selectbox("Coluna de Código de Produto", colunas_disponiveis, index=idx_cod)
         with c5:
-            idx_dealer = encontrar_indice_coluna(colunas_disponiveis, ['DL01', 'DEALER', 'CLIENTE', 'CLI'])
+            idx_dealer = encontrar_indice_coluna(colunas_disponiveis, ['DL01'])
             col_dealer = st.selectbox("Coluna de Dealer / Cliente", colunas_disponiveis, index=idx_dealer)
             
         st.divider()
