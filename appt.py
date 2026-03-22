@@ -53,8 +53,17 @@ def excel_col_to_name(df, col_str):
         return df.columns[idx]
     return None
 
+def encontrar_indice_coluna(colunas_disponiveis, palavras_chave):
+    """ Radar inteligente que procura palavras-chave nos nomes das colunas e retorna o índice """
+    for i, col in enumerate(colunas_disponiveis):
+        col_upper = str(col).upper()
+        for palavra in palavras_chave:
+            if palavra.upper() in col_upper:
+                return i
+    return 0 
+
 # ==========================================
-# 2. MOTOR DE SEQUENCIAMENTO (INVERSÃO DIRETA + TRAVA DE REPETIÇÃO)
+# 2. MOTOR DE SEQUENCIAMENTO 
 # ==========================================
 
 def processar_sequenciamento(df_base, col_data, col_prioridade, col_fila, col_codigo, col_dealer):
@@ -63,12 +72,10 @@ def processar_sequenciamento(df_base, col_data, col_prioridade, col_fila, col_co
     df_processo[col_data] = pd.to_datetime(df_processo[col_data], errors='coerce')
     df_processo['Descrição da Prioridade'] = df_processo[col_prioridade].apply(classificar_prioridade)
     
-    # Coluna oculta para ordenação matemática da Prioridade
     df_processo['Prioridade_Num'] = pd.to_numeric(
         df_processo[col_prioridade].apply(get_prioridade_str), errors='coerce'
     ).fillna(999999999) 
     
-    # Identifica as colunas de suporte dinamicamente
     col_C = excel_col_to_name(df_processo, 'C') # TIPO_DEMANDA
     col_I = excel_col_to_name(df_processo, 'I') # OBS_FILA
     col_Z = excel_col_to_name(df_processo, 'Z') # FILIAL
@@ -81,18 +88,15 @@ def processar_sequenciamento(df_base, col_data, col_prioridade, col_fila, col_co
         estado_atual = grupo.to_dict('records')
         estado_atual.sort(key=lambda x: x[col_data])
         
-        # Controle para garantir que cada fila faça apenas UMA inversão
         filas_usadas = set()
         
         for i in range(len(estado_atual)):
             slot_data = estado_atual[i][col_data]
             ocupante_atual = estado_atual[i]
             
-            # Se a fila ocupante atual já foi envolvida em uma troca, ela não pode ser bloqueadora novamente
             if ocupante_atual[col_fila] in filas_usadas:
                 continue
             
-            # Procura candidatos apenas entre as filas que ainda NÃO foram usadas
             candidatos = [c for c in estado_atual[i:] if c[col_fila] not in filas_usadas]
             
             if not candidatos:
@@ -110,16 +114,13 @@ def processar_sequenciamento(df_base, col_data, col_prioridade, col_fila, col_co
             p_desc = ideal['Descrição da Prioridade']
             p_str = get_prioridade_str(ideal[col_prioridade])
             
-            # Tolerâncias
             if p_desc != 'BUFF/RES' and len(p_str) >= 5:
                 quinto_digito = p_str[4]
-                # URGENTE (1) agora está agrupado com 2, 4 e 6 na tolerância de Semana
                 if quinto_digito in ['1', '2', '4', '6']:
                     if mesma_semana(data_orig_ideal, slot_data): ignorar = True
                 else:
                     if mesmo_mes(data_orig_ideal, slot_data): ignorar = True
             
-            # Mesmo Dealer
             dealer_ideal = ideal.get(col_dealer)
             dealer_ocupante = ocupante_atual.get(col_dealer)
             if pd.notna(dealer_ideal) and str(dealer_ideal).strip() != "":
@@ -127,7 +128,6 @@ def processar_sequenciamento(df_base, col_data, col_prioridade, col_fila, col_co
                     ignorar = True
             
             if not ignorar:
-                # Geração de UMA ÚNICA LINHA unificando as informações do Swap (Inversão)
                 linha_swap = {
                     'Fila': ideal[col_fila],
                     'Data Original': data_orig_ideal,
@@ -152,11 +152,9 @@ def processar_sequenciamento(df_base, col_data, col_prioridade, col_fila, col_co
                 
                 relatorio_ok.append(linha_swap)
                 
-                # Tranca as duas filas para que não entrem em mais nenhuma dança das cadeiras
                 filas_usadas.add(ideal[col_fila])
                 filas_usadas.add(ocupante_atual[col_fila])
                 
-                # Simula a troca no estado atual para manter o calendário preciso
                 idx_ideal = estado_atual.index(ideal)
                 ideal_copia = ideal.copy()
                 ocupante_copia = ocupante_atual.copy()
@@ -200,21 +198,21 @@ if arquivo_upload is not None:
         c1, c2, c3 = st.columns(3)
         c4, c5 = st.columns(2)
         
+        # Uso do Radar Inteligente atualizado com as nomenclaturas oficiais
         with c1:
-            idx_data = colunas_disponiveis.index('Data Offline') if 'Data Offline' in colunas_disponiveis else 0
+            idx_data = encontrar_indice_coluna(colunas_disponiveis, ['DT_OFFLINE', 'DATA OFFLINE', 'OFFLINE'])
             col_data = st.selectbox("Coluna de Data", colunas_disponiveis, index=idx_data)
         with c2:
-            idx_prio = colunas_disponiveis.index('Prioridade') if 'Prioridade' in colunas_disponiveis else 0
+            idx_prio = encontrar_indice_coluna(colunas_disponiveis, ['PRIORIDADE OFICIAL', 'PRIORIDADE'])
             col_prioridade = st.selectbox("Coluna de Prioridade", colunas_disponiveis, index=idx_prio)
         with c3:
-            idx_fila = colunas_disponiveis.index('Fila_ID') if 'Fila_ID' in colunas_disponiveis else 0
+            idx_fila = encontrar_indice_coluna(colunas_disponiveis, ['NR_FILA_BTO', 'FILA_ID', 'FILA BTO'])
             col_fila = st.selectbox("Coluna de Fila (ID)", colunas_disponiveis, index=idx_fila)
         with c4:
-            idx_cod = colunas_disponiveis.index('Codigo_Produto') if 'Codigo_Produto' in colunas_disponiveis else 0
+            idx_cod = encontrar_indice_coluna(colunas_disponiveis, ['CD_PRODUTO', 'CODIGO_PRODUTO'])
             col_codigo = st.selectbox("Coluna de Código de Produto", colunas_disponiveis, index=idx_cod)
         with c5:
-            possiveis_dealer = [c for c in colunas_disponiveis if 'DEALER' in str(c).upper() or 'CLI' in str(c).upper()]
-            idx_dealer = colunas_disponiveis.index(possiveis_dealer[0]) if possiveis_dealer else 0
+            idx_dealer = encontrar_indice_coluna(colunas_disponiveis, ['DL01', 'DEALER', 'CLIENTE', 'CLI'])
             col_dealer = st.selectbox("Coluna de Dealer / Cliente", colunas_disponiveis, index=idx_dealer)
             
         st.divider()
