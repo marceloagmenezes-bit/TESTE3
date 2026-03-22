@@ -54,7 +54,7 @@ def excel_col_to_name(df, col_str):
     return None
 
 # ==========================================
-# 2. MOTOR DE SEQUENCIAMENTO (INVERSÃO DIRETA - LINHA ÚNICA)
+# 2. MOTOR DE SEQUENCIAMENTO (INVERSÃO DIRETA + TRAVA DE REPETIÇÃO)
 # ==========================================
 
 def processar_sequenciamento(df_base, col_data, col_prioridade, col_fila, col_codigo, col_dealer):
@@ -81,11 +81,24 @@ def processar_sequenciamento(df_base, col_data, col_prioridade, col_fila, col_co
         estado_atual = grupo.to_dict('records')
         estado_atual.sort(key=lambda x: x[col_data])
         
+        # Controle para garantir que cada fila faça apenas UMA inversão
+        filas_usadas = set()
+        
         for i in range(len(estado_atual)):
             slot_data = estado_atual[i][col_data]
             ocupante_atual = estado_atual[i]
             
-            candidatos = sorted(estado_atual[i:], key=lambda x: (x['Prioridade_Num'], x[col_data]))
+            # Se a fila ocupante atual já foi envolvida em uma troca, ela não pode ser bloqueadora novamente
+            if ocupante_atual[col_fila] in filas_usadas:
+                continue
+            
+            # Procura candidatos apenas entre as filas que ainda NÃO foram usadas
+            candidatos = [c for c in estado_atual[i:] if c[col_fila] not in filas_usadas]
+            
+            if not candidatos:
+                continue
+                
+            candidatos = sorted(candidatos, key=lambda x: (x['Prioridade_Num'], x[col_data]))
             ideal = candidatos[0]
             
             if ideal[col_fila] == ocupante_atual[col_fila]:
@@ -100,6 +113,7 @@ def processar_sequenciamento(df_base, col_data, col_prioridade, col_fila, col_co
             # Tolerâncias
             if p_desc != 'BUFF/RES' and len(p_str) >= 5:
                 quinto_digito = p_str[4]
+                # URGENTE (1) agora está agrupado com 2, 4 e 6 na tolerância de Semana
                 if quinto_digito in ['1', '2', '4', '6']:
                     if mesma_semana(data_orig_ideal, slot_data): ignorar = True
                 else:
@@ -115,26 +129,22 @@ def processar_sequenciamento(df_base, col_data, col_prioridade, col_fila, col_co
             if not ignorar:
                 # Geração de UMA ÚNICA LINHA unificando as informações do Swap (Inversão)
                 linha_swap = {
-                    # 1. Informações de Ação
                     'Fila': ideal[col_fila],
                     'Data Original': data_orig_ideal,
                     'Data sugerida': slot_data,
                     
-                    # 2. Dados da Fila Original (que será antecipada)
                     'Código do Produto': ideal[col_codigo],
                     'Dealer Original': ideal.get(col_dealer),
                     'Observação Fila': ideal.get(col_I),
                     'Demanda Fila': ideal.get(col_C),
                     'Desc. Prioridade Fila': ideal['Descrição da Prioridade'],
                     
-                    # 3. Informações da Fila que sofrerá a inversão
                     'Fila inversão': ocupante_atual[col_fila],
                     'Dealer Inversão': ocupante_atual.get(col_dealer),
                     'Observação Inversão': ocupante_atual.get(col_I),
                     'Demanda Inversão': ocupante_atual.get(col_C),
                     'Desc. Prioridade Inversão': ocupante_atual['Descrição da Prioridade'],
                     
-                    # 4. Dados em Comum (Compartilhados entre ambas)
                     'Marca (Comum)': ideal.get(col_CQ),
                     'DS Mercado (Comum)': ideal.get(col_AX),
                     'Filial (Comum)': ideal.get(col_Z)
@@ -142,7 +152,11 @@ def processar_sequenciamento(df_base, col_data, col_prioridade, col_fila, col_co
                 
                 relatorio_ok.append(linha_swap)
                 
-                # Simula a troca para manter a precisão das próximas datas do loop
+                # Tranca as duas filas para que não entrem em mais nenhuma dança das cadeiras
+                filas_usadas.add(ideal[col_fila])
+                filas_usadas.add(ocupante_atual[col_fila])
+                
+                # Simula a troca no estado atual para manter o calendário preciso
                 idx_ideal = estado_atual.index(ideal)
                 ideal_copia = ideal.copy()
                 ocupante_copia = ocupante_atual.copy()
@@ -156,7 +170,6 @@ def processar_sequenciamento(df_base, col_data, col_prioridade, col_fila, col_co
     
     if not df_final.empty:
         df_final = df_final.sort_values(by=['Código do Produto', 'Data sugerida'])
-        # Converte as datas para String Formato BR para o Excel ficar perfeito e sem horas
         df_final['Data Original'] = df_final['Data Original'].dt.strftime('%d/%m/%Y')
         df_final['Data sugerida'] = df_final['Data sugerida'].dt.strftime('%d/%m/%Y')
         
@@ -166,9 +179,9 @@ def processar_sequenciamento(df_base, col_data, col_prioridade, col_fila, col_co
 # 3. INTERFACE STREAMLIT E EXPORTAÇÃO EXCEL
 # ==========================================
 
-st.set_page_config(page_title="Sequenciamento de Produção", layout="wide")
-st.title("⚙️ Sequenciamento de Produção")
-st.markdown("Faça o upload da planilha base para gerar o relatório de ação gerencial.")
+st.set_page_config(page_title="Smart Order Management", layout="wide")
+st.title("⚙️ Smart Order Management")
+st.markdown("Faça o upload da base de produção para calcular o balanceamento comercial.")
 
 arquivo_upload = st.file_uploader("Selecione o arquivo Excel", type=["xlsx", "xls", "csv"])
 
@@ -216,7 +229,6 @@ if arquivo_upload is not None:
                 else:
                     st.dataframe(df_ok)
                 
-                # PREPARAÇÃO DO EXCEL
                 buffer = io.BytesIO()
                 with pd.ExcelWriter(buffer, engine='xlsxwriter') as writer:
                     df_original.to_excel(writer, sheet_name='Base Original', index=False)
@@ -225,35 +237,29 @@ if arquivo_upload is not None:
                     workbook  = writer.book
                     worksheet = writer.sheets['OK']
                     
-                    # 1. Congelar Painéis (Trava a 1ª linha e a 1ª coluna de 'Fila')
                     worksheet.freeze_panes(1, 1)
                     
-                    # 2. Ativar Filtro Automático
                     if not df_ok.empty:
                         (max_row, max_col) = df_ok.shape
                         worksheet.autofilter(0, 0, max_row, max_col - 1)
                     
-                    # 3. Definições de Estilos de Cores
                     formato_cabecalho = workbook.add_format({
-                        'bg_color': '#1F4E78', # Azul Escuro
+                        'bg_color': '#1F4E78',
                         'font_color': 'white',
                         'bold': True,
                         'border': 1,
                         'valign': 'vcenter'
                     })
                     
-                    formato_zebra_1 = workbook.add_format({'bg_color': '#FFFFFF', 'border': 1}) # Branco
-                    formato_zebra_2 = workbook.add_format({'bg_color': '#F2F2F2', 'border': 1}) # Cinza Claro
+                    formato_zebra_1 = workbook.add_format({'bg_color': '#FFFFFF', 'border': 1})
+                    formato_zebra_2 = workbook.add_format({'bg_color': '#F2F2F2', 'border': 1})
                     
-                    # 4. Escreve Cabeçalhos com Cor e Ajusta Largura das Colunas
                     larguras = [12, 14, 14, 18, 25, 20, 15, 20, 14, 25, 20, 15, 20, 15, 18, 15]
                     for col_num, value in enumerate(df_ok.columns.values):
                         worksheet.write(0, col_num, value, formato_cabecalho)
-                        # Aplica largura baseada na lista ou padrão
                         w = larguras[col_num] if col_num < len(larguras) else 15
                         worksheet.set_column(col_num, col_num, w)
 
-                    # 5. Pintar as Linhas (Zebra) baseada na quebra de Código de Produto
                     if not df_ok.empty:
                         codigo_anterior = None
                         cor_atual = formato_zebra_1
@@ -261,22 +267,19 @@ if arquivo_upload is not None:
                         for row_num in range(len(df_ok)):
                             codigo_atual = df_ok.iloc[row_num]['Código do Produto']
                             
-                            # Se o código mudar, alterna a cor
                             if codigo_atual != codigo_anterior:
                                 cor_atual = formato_zebra_2 if cor_atual == formato_zebra_1 else formato_zebra_1
                                 codigo_anterior = codigo_atual
                             
-                            # Escreve a linha inteira com a cor correspondente
                             for col_num in range(len(df_ok.columns)):
                                 val = df_ok.iloc[row_num, col_num]
-                                # Previne NaN virando vazio estranho
                                 if pd.isna(val): val = ""
                                 worksheet.write(row_num + 1, col_num, val, cor_atual)
                 
                 st.download_button(
                     label="📥 Baixar Relatório Consolidado (Excel)",
                     data=buffer.getvalue(),
-                    file_name="Relatorio_Sequenciamento_V_Final.xlsx",
+                    file_name="Relatorio_Smart_Order_Management.xlsx",
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
                 )
         
