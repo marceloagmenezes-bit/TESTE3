@@ -1,3 +1,4 @@
+Python
 import streamlit as st
 import pandas as pd
 import io
@@ -43,16 +44,6 @@ def mesmo_mes(data1, data2):
     if pd.isna(data1) or pd.isna(data2): return False
     return (data1.year == data2.year) and (data1.month == data2.month)
 
-def excel_col_to_name(df, col_str):
-    col_str = col_str.upper()
-    idx = 0
-    for char in col_str:
-        idx = idx * 26 + (ord(char) - ord('A')) + 1
-    idx -= 1 
-    if idx < len(df.columns):
-        return df.columns[idx]
-    return None
-
 def encontrar_indice_coluna(colunas_disponiveis, palavras_chave):
     """ Radar inteligente que procura palavras-chave nos nomes das colunas e retorna o índice """
     for i, col in enumerate(colunas_disponiveis):
@@ -61,6 +52,27 @@ def encontrar_indice_coluna(colunas_disponiveis, palavras_chave):
             if palavra.upper() in col_upper:
                 return i
     return 0 
+
+def buscar_coluna_dinamica(df, palavras_chave):
+    """ Busca o nome exato da coluna na base, independente do tamanho ou posição """
+    for col in df.columns:
+        if str(col).upper() in [p.upper() for p in palavras_chave]:
+            return col
+    for col in df.columns:
+        col_upper = str(col).upper()
+        for p in palavras_chave:
+            if p.upper() in col_upper:
+                return col
+    return None
+
+def obter_valor(row_dict, col_name):
+    """ Escudo para valores vazios ou colunas que não existem na planilha """
+    if col_name is None or col_name not in row_dict:
+        return "não encontrado"
+    val = row_dict[col_name]
+    if pd.isna(val) or str(val).strip() == "":
+        return "não encontrado"
+    return val
 
 # ==========================================
 # 2. MOTOR DE SEQUENCIAMENTO 
@@ -76,11 +88,13 @@ def processar_sequenciamento(df_base, col_data, col_prioridade, col_fila, col_co
         df_processo[col_prioridade].apply(get_prioridade_str), errors='coerce'
     ).fillna(999999999) 
     
-    col_C = excel_col_to_name(df_processo, 'C') # TIPO_DEMANDA
-    col_I = excel_col_to_name(df_processo, 'I') # OBS_FILA
-    col_Z = excel_col_to_name(df_processo, 'Z') # FILIAL
-    col_AX = excel_col_to_name(df_processo, 'AX') # DS_MERCADO
-    col_CQ = excel_col_to_name(df_processo, 'CQ') # MARCA
+    # Busca dinâmica das colunas de suporte (imune a quebra se as colunas mudarem de ordem ou passarem de 130)
+    col_C = buscar_coluna_dinamica(df_processo, ['CD_TIPO_DEMANDA', 'TIPO_DEMANDA', 'DEMANDA'])
+    col_I = buscar_coluna_dinamica(df_processo, ['DS_OBS_FILA', 'OBS_FILA', 'OBS'])
+    col_Z = buscar_coluna_dinamica(df_processo, ['CD_FILIAL', 'FILIAL'])
+    col_AX = buscar_coluna_dinamica(df_processo, ['DS_MERCADO', 'MERCADO'])
+    col_CQ = buscar_coluna_dinamica(df_processo, ['NM_MARCA', 'MARCA'])
+    col_STATUS = buscar_coluna_dinamica(df_processo, ['FL_STATUS_WO', 'STATUS_WO', 'STATUS'])
     
     relatorio_ok = []
 
@@ -129,25 +143,27 @@ def processar_sequenciamento(df_base, col_data, col_prioridade, col_fila, col_co
             
             if not ignorar:
                 linha_swap = {
-                    'Fila': ideal[col_fila],
+                    'Fila': obter_valor(ideal, col_fila),
                     'Data Original': data_orig_ideal,
                     'Data sugerida': slot_data,
                     
-                    'Código do Produto': ideal[col_codigo],
-                    'Dealer Original': ideal.get(col_dealer),
-                    'Observação Fila': ideal.get(col_I),
-                    'Demanda Fila': ideal.get(col_C),
-                    'Desc. Prioridade Fila': ideal['Descrição da Prioridade'],
+                    'Código do Produto': obter_valor(ideal, col_codigo),
+                    'Dealer Original': obter_valor(ideal, col_dealer),
+                    'Observação Fila': obter_valor(ideal, col_I),
+                    'Demanda Fila': obter_valor(ideal, col_C),
+                    'Status WO Fila': obter_valor(ideal, col_STATUS),
+                    'Desc. Prioridade Fila': ideal.get('Descrição da Prioridade', 'não encontrado'),
                     
-                    'Fila inversão': ocupante_atual[col_fila],
-                    'Dealer Inversão': ocupante_atual.get(col_dealer),
-                    'Observação Inversão': ocupante_atual.get(col_I),
-                    'Demanda Inversão': ocupante_atual.get(col_C),
-                    'Desc. Prioridade Inversão': ocupante_atual['Descrição da Prioridade'],
+                    'Fila inversão': obter_valor(ocupante_atual, col_fila),
+                    'Dealer Inversão': obter_valor(ocupante_atual, col_dealer),
+                    'Observação Inversão': obter_valor(ocupante_atual, col_I),
+                    'Demanda Inversão': obter_valor(ocupante_atual, col_C),
+                    'Status WO Inversão': obter_valor(ocupante_atual, col_STATUS),
+                    'Desc. Prioridade Inversão': ocupante_atual.get('Descrição da Prioridade', 'não encontrado'),
                     
-                    'Marca (Comum)': ideal.get(col_CQ),
-                    'DS Mercado (Comum)': ideal.get(col_AX),
-                    'Filial (Comum)': ideal.get(col_Z)
+                    'Marca (Comum)': obter_valor(ideal, col_CQ),
+                    'DS Mercado (Comum)': obter_valor(ideal, col_AX),
+                    'Filial (Comum)': obter_valor(ideal, col_Z)
                 }
                 
                 relatorio_ok.append(linha_swap)
@@ -198,9 +214,9 @@ if arquivo_upload is not None:
         c1, c2, c3 = st.columns(3)
         c4, c5 = st.columns(2)
         
-        # Uso do Radar Inteligente atualizado com as nomenclaturas oficiais
+        # Radar Inteligente atualizado para DT_PROMETIDA
         with c1:
-            idx_data = encontrar_indice_coluna(colunas_disponiveis, ['DT_OFFLINE', 'DATA OFFLINE', 'OFFLINE'])
+            idx_data = encontrar_indice_coluna(colunas_disponiveis, ['DT_PROMETIDA', 'DATA PROMETIDA', 'PROMETIDA', 'DT_OFFLINE', 'OFFLINE'])
             col_data = st.selectbox("Coluna de Data", colunas_disponiveis, index=idx_data)
         with c2:
             idx_prio = encontrar_indice_coluna(colunas_disponiveis, ['PRIORIDADE OFICIAL', 'PRIORIDADE'])
@@ -212,7 +228,7 @@ if arquivo_upload is not None:
             idx_cod = encontrar_indice_coluna(colunas_disponiveis, ['CD_PRODUTO', 'CODIGO_PRODUTO'])
             col_codigo = st.selectbox("Coluna de Código de Produto", colunas_disponiveis, index=idx_cod)
         with c5:
-            idx_dealer = encontrar_indice_coluna(colunas_disponiveis, ['DL01'])
+            idx_dealer = encontrar_indice_coluna(colunas_disponiveis, ['DL01', 'DEALER', 'CLIENTE', 'CLI'])
             col_dealer = st.selectbox("Coluna de Dealer / Cliente", colunas_disponiveis, index=idx_dealer)
             
         st.divider()
@@ -222,8 +238,10 @@ if arquivo_upload is not None:
                 df_ok = processar_sequenciamento(df_original, col_data, col_prioridade, col_fila, col_codigo, col_dealer)
                 
                 st.subheader("Pré-visualização da Aba OK")
+                
+                # Feedback visual caso não existam trocas
                 if df_ok.empty:
-                    st.warning("Nenhuma alteração de alto benefício encontrada.")
+                    st.success("✨ Filas já estão otimizadas!")
                 else:
                     st.dataframe(df_ok)
                 
@@ -252,7 +270,8 @@ if arquivo_upload is not None:
                     formato_zebra_1 = workbook.add_format({'bg_color': '#FFFFFF', 'border': 1})
                     formato_zebra_2 = workbook.add_format({'bg_color': '#F2F2F2', 'border': 1})
                     
-                    larguras = [12, 14, 14, 18, 25, 20, 15, 20, 14, 25, 20, 15, 20, 15, 18, 15]
+                    # Largura base calculada de forma dinâmica para não crashar com colunas novas
+                    larguras = [12, 14, 14, 18, 25, 20, 15, 15, 20, 14, 25, 20, 15, 15, 20, 15, 18, 15]
                     for col_num, value in enumerate(df_ok.columns.values):
                         worksheet.write(0, col_num, value, formato_cabecalho)
                         w = larguras[col_num] if col_num < len(larguras) else 15
@@ -274,6 +293,7 @@ if arquivo_upload is not None:
                                 if pd.isna(val): val = ""
                                 worksheet.write(row_num + 1, col_num, val, cor_atual)
                 
+                # Apenas disponibiliza o download se não for uma tabela vazia (opcional)
                 st.download_button(
                     label="📥 Baixar Relatório Consolidado (Excel)",
                     data=buffer.getvalue(),
