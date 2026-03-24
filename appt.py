@@ -65,12 +65,18 @@ def buscar_coluna_dinamica(df, palavras_chave):
     return None
 
 def obter_valor(row_dict, col_name):
-    """ Escudo para valores vazios ou colunas que não existem na planilha """
+    """ 
+    Escudo inteligente:
+    - Se a coluna não existe no arquivo: retorna "não encontrado"
+    - Se a coluna existe, mas o campo está vazio: retorna "" (em branco)
+    """
     if col_name is None or col_name not in row_dict:
         return "não encontrado"
+    
     val = row_dict[col_name]
-    if pd.isna(val) or str(val).strip() == "":
-        return "não encontrado"
+    if pd.isna(val): 
+        return ""
+        
     return val
 
 # ==========================================
@@ -87,7 +93,7 @@ def processar_sequenciamento(df_base, col_data, col_prioridade, col_fila, col_co
         df_processo[col_prioridade].apply(get_prioridade_str), errors='coerce'
     ).fillna(999999999) 
     
-    # Busca dinâmica das colunas de suporte (imune a quebra se as colunas mudarem de ordem ou passarem de 130)
+    # Busca dinâmica das colunas de suporte (imune a quebra se as colunas mudarem de ordem)
     col_C = buscar_coluna_dinamica(df_processo, ['CD_TIPO_DEMANDA', 'TIPO_DEMANDA', 'DEMANDA'])
     col_I = buscar_coluna_dinamica(df_processo, ['DS_OBS_FILA', 'OBS_FILA', 'OBS'])
     col_Z = buscar_coluna_dinamica(df_processo, ['CD_FILIAL', 'FILIAL'])
@@ -151,14 +157,14 @@ def processar_sequenciamento(df_base, col_data, col_prioridade, col_fila, col_co
                     'Observação Fila': obter_valor(ideal, col_I),
                     'Demanda Fila': obter_valor(ideal, col_C),
                     'Status WO Fila': obter_valor(ideal, col_STATUS),
-                    'Desc. Prioridade Fila': ideal.get('Descrição da Prioridade', 'não encontrado'),
+                    'Desc. Prioridade Fila': ideal.get('Descrição da Prioridade', ''),
                     
                     'Fila inversão': obter_valor(ocupante_atual, col_fila),
                     'Dealer Inversão': obter_valor(ocupante_atual, col_dealer),
                     'Observação Inversão': obter_valor(ocupante_atual, col_I),
                     'Demanda Inversão': obter_valor(ocupante_atual, col_C),
                     'Status WO Inversão': obter_valor(ocupante_atual, col_STATUS),
-                    'Desc. Prioridade Inversão': ocupante_atual.get('Descrição da Prioridade', 'não encontrado'),
+                    'Desc. Prioridade Inversão': ocupante_atual.get('Descrição da Prioridade', ''),
                     
                     'Marca (Comum)': obter_valor(ideal, col_CQ),
                     'DS Mercado (Comum)': obter_valor(ideal, col_AX),
@@ -292,7 +298,6 @@ if arquivo_upload is not None:
                                 if pd.isna(val): val = ""
                                 worksheet.write(row_num + 1, col_num, val, cor_atual)
                 
-                # Apenas disponibiliza o download se não for uma tabela vazia (opcional)
                 st.download_button(
                     label="📥 Baixar Relatório Consolidado (Excel)",
                     data=buffer.getvalue(),
